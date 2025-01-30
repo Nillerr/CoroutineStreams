@@ -50,7 +50,7 @@ class ExportService(
 
         // Now when we want to write the files downloaded from AWS S3 to an `InputStream` we pass on to the client in
         // order to stream the ZIP file itself, we first need to create a `PipedInputStream` which we can write to
-        // while Micronaut takes care of streaming it to the client.
+        // while Micronaut eventually takes care of streaming it to the client.
         val pipedInputStream = PipedInputStream(DEFAULT_BUFFER_SIZE)
 
         // We wrap that `PipedInputStream` in a `PipedOutputStream` to be able to write to it.
