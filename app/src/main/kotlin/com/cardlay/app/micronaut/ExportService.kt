@@ -26,12 +26,12 @@ class ExportService(
 
         // Not only do we use a `BlockingTaskQueue` to limit the parallelism of fetching the attachment files from
         // AWS S3...
-        val files = BlockingTaskQueue<DownloadedAWSS3File>(5)
+        val downloadedFilesQueue = BlockingTaskQueue<DownloadedAWSS3File>(5)
 
         // ... but we also wrap that in a `PermittingBlockingTaskQueue` to limit enqueuing the work itself, thus
         // lowering memory usage by not allocating heap memory associated with each call to `execute` until we know
         // there's a thread available to actually perform the associated work.
-        val downloadExecutor = files.asPermittingBlockingTaskQueue()
+        val downloadedWriterQueue = downloadedFilesQueue.asPermittingBlockingTaskQueue()
 
         // Doing so means we would block the calling thread while waiting for enqueued work to be complete, so to
         // prevent that we create a new single-thread executor for every call to export.
@@ -40,8 +40,8 @@ class ExportService(
         val enqueueExecutor = Executors.newSingleThreadExecutor()
         enqueueExecutor.execute {
             attachments.forEach { attachment ->
-                downloadExecutor.submit {
-                    // By using a `PermittingBlockingTaskQueue` this block is only entered when the underlying
+                downloadedWriterQueue.submit {
+                    // By using a `PermittingBlockingTaskQueue` this block is only entered once the underlying
                     // `BlockingTaskQueue` is ready to perform more work.
                     downloadedAWSS3File(attachment)
                 }
@@ -63,9 +63,9 @@ class ExportService(
         // than what is used to read from its associated `PipedInputStream`. Now I'm not sure whether Micronaut uses
         // the current thread to read the `InputStream`, so to make sure the implementation is solid, we use another
         // single-thread executor, that is separate from the one used to enqueue the work to download files.
-        val zipExecutor = Executors.newSingleThreadExecutor()
-        zipExecutor.execute {
-            writeFiles(zipOutputStream, files)
+        val zipWriterExecutor = Executors.newSingleThreadExecutor()
+        zipWriterExecutor.execute {
+            zipOutputStream.writeFiles(downloadedFilesQueue)
         }
 
         // Now here's the confusing thing... Once we reach this line, all the stuff we started up above is still
@@ -85,24 +85,6 @@ class ExportService(
         return file
     }
 
-    private fun writeFiles(out: ZipOutputStream, files: BlockingTaskQueue<DownloadedAWSS3File>) {
-        var attachmentFile = files.poll()
-        while (attachmentFile != null) {
-            val attachmentEntry = ZipEntry(attachmentFile.name)
-            out.putNextEntry(attachmentEntry)
-            writeFile(out, attachmentFile)
-            out.closeEntry()
-        }
-
-        out.close()
-    }
-
-    private fun writeFile(out: ZipOutputStream, file: DownloadedAWSS3File) {
-        file.content.toInputStream().use { contentInputStream ->
-            contentInputStream.copyTo(out)
-        }
-    }
-
     private fun downloadedAWSS3File(attachment: ExpenseAttachment): DownloadedAWSS3File {
         val awsFile = aws.getFile(attachment.token)
 
@@ -112,5 +94,23 @@ class ExportService(
         }
 
         return DownloadedAWSS3File(name = awsFile.name, content = byteBuffer)
+    }
+}
+
+private fun ZipOutputStream.writeFiles(files: BlockingTaskQueue<DownloadedAWSS3File>) {
+    var attachmentFile = files.poll()
+    while (attachmentFile != null) {
+        val attachmentEntry = ZipEntry(attachmentFile.name)
+        putNextEntry(attachmentEntry)
+        writeFile(attachmentFile)
+        closeEntry()
+    }
+
+    close()
+}
+
+private fun ZipOutputStream.writeFile(file: DownloadedAWSS3File) {
+    file.content.toInputStream().use { contentInputStream ->
+        contentInputStream.copyTo(this)
     }
 }
