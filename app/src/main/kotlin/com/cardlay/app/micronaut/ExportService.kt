@@ -28,24 +28,26 @@ class ExportService(
         // AWS S3...
         val downloadedFilesQueue = BlockingTaskQueue<DownloadedAWSS3File>(5)
 
-        // ... but we also wrap that in a `PermittingBlockingTaskQueue` to limit enqueuing the work itself, thus
-        // lowering memory usage by not allocating heap memory associated with each call to `execute` until we know
-        // there's a thread available to actually perform the associated work.
-        val downloadedWriterQueue = downloadedFilesQueue.asPermittingBlockingTaskQueue()
-
         // Doing so means we would block the calling thread while waiting for enqueued work to be complete, so to
         // prevent that we create a new single-thread executor for every call to export.
         // (This could also use a custom configured thread-pool by injecting another `@Named` `ExecutorService`) if we
         // want to limit the total number of concurrent calls to the export endpoint for a given service instance.
         val enqueueExecutor = Executors.newSingleThreadExecutor()
         enqueueExecutor.execute {
-            attachments.forEach { attachment ->
-                downloadedWriterQueue.submit {
-                    // By using a `PermittingBlockingTaskQueue` this block is only entered once the underlying
-                    // `BlockingTaskQueue` is ready to perform more work.
-                    downloadedAWSS3File(attachment)
+            // ... but we also wrap that in a `PermittingBlockingTaskQueue` to limit enqueuing the work itself, thus
+            // lowering memory usage by not allocating heap memory associated with each call to `execute` until we know
+            // there's a thread available to actually perform the associated work.
+            downloadedFilesQueue.asPermittingBlockingTaskQueue().use { downloadedWriterQueue ->
+                attachments.forEach { attachment ->
+                    downloadedWriterQueue.submit {
+                        // By using a `PermittingBlockingTaskQueue` this block is only entered once the underlying
+                        // `BlockingTaskQueue` is ready to perform more work.
+                        downloadedAWSS3File(attachment)
+                    }
                 }
             }
+
+            enqueueExecutor.shutdown()
         }
 
         // Now when we want to write the files downloaded from AWS S3 to an `InputStream` we pass on to the client in
@@ -66,6 +68,7 @@ class ExportService(
         val zipWriterExecutor = Executors.newSingleThreadExecutor()
         zipWriterExecutor.execute {
             zipOutputStream.writeFiles(downloadedFilesQueue)
+            zipWriterExecutor.shutdown()
         }
 
         // Now here's the confusing thing... Once we reach this line, all the stuff we started up above is still
@@ -98,7 +101,7 @@ class ExportService(
 }
 
 private fun ZipOutputStream.writeFiles(files: BlockingTaskQueue<DownloadedAWSS3File>) {
-    var attachmentFile = files.poll()
+    var attachmentFile = files.dequeue()
     while (attachmentFile != null) {
         val attachmentEntry = ZipEntry(attachmentFile.name)
         putNextEntry(attachmentEntry)
