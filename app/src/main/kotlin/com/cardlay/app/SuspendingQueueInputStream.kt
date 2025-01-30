@@ -7,7 +7,7 @@ import java.io.IOException
 import java.util.*
 import kotlin.math.min
 
-class SuspendingQueueInputStream(val queueSize: Int = 4) : SuspendingCloseable {
+class SuspendingQueueInputStream(val queueSize: Int = 4) : SuspendingInputStream {
     constructor(source: SuspendingQueueOutputStream) : this(source.queueSize) {
         connect(source)
     }
@@ -24,6 +24,8 @@ class SuspendingQueueInputStream(val queueSize: Int = 4) : SuspendingCloseable {
 
     private var reading: SuspendingStreamChunk? = null
 
+    private val readBuffer = ByteArray(1)
+
     fun connect(source: SuspendingQueueOutputStream) {
         if (this.source != null) {
             throw IOException("The SuspendingInputStream is already connected to a SuspendingOutputStream.")
@@ -33,11 +35,16 @@ class SuspendingQueueInputStream(val queueSize: Int = 4) : SuspendingCloseable {
         source.sink = this
     }
 
-    suspend fun read(destination: ByteArray): Int {
-        return read(destination, 0, destination.size)
+    override suspend fun read(): Int {
+        val next = read(readBuffer)
+        if (next == -1) {
+            return -1
+        }
+
+        return readBuffer[0].toInt()
     }
 
-    suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
+    override suspend fun read(destination: ByteArray, offset: Int, length: Int): Int {
         suspendingQueueOutputStream.ensureInitialized()
 
         Objects.checkFromIndexSize(offset, destination.size, length)

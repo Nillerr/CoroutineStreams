@@ -10,7 +10,7 @@ import java.util.*
 class SuspendingQueueOutputStream(
     val queueSize: Int = 4,
     private val initialChunkSize: Int = 1024,
-) : SuspendingCloseable {
+) : SuspendingOutputStream {
     constructor(
         sink: SuspendingQueueInputStream,
         initialChunkSize: Int = 1024,
@@ -59,11 +59,7 @@ class SuspendingQueueOutputStream(
         }
     }
 
-    suspend fun write(source: ByteArray) {
-        write(source, 0, source.size)
-    }
-
-    suspend fun write(source: ByteArray, offset: Int, length: Int) {
+    override suspend fun write(source: ByteArray, offset: Int, length: Int) {
         ensureInitialized()
         Objects.checkFromIndexSize(offset, source.size, length)
 
